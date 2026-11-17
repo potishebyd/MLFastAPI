@@ -1,46 +1,51 @@
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from schemas import TrainingConfigChurn
 
 from preprocessing import (
-    CATEGORICAL_FEATURES,
-    NUMERIC_FEATURES,
     TARGET,
+    build_preprocessor,
     extract_features,
     split_dataset,
 )
 
 
-def train_churn_model(rows: list[dict]) -> Pipeline:
+def create_classifier(config: TrainingConfigChurn):
+    if config.model_type == "logreg":
+        classifier_class = LogisticRegression
+        defaults = {"max_iter": 1000, "random_state": 42}
+    else:
+        classifier_class = RandomForestClassifier
+        defaults = {"n_estimators": 100, "random_state": 42}
+    try:
+        return classifier_class(**{**defaults, **config.hyperparameters})
+    except TypeError as error:
+        raise ValueError(f"Некорректные гиперпараметры {config.model_type}: {error}") from error
+
+
+def train_churn_model(
+    rows: list[dict], config: TrainingConfigChurn | None = None
+) -> Pipeline:
     """Fit a complete pipeline on the supplied training rows."""
     X, y = extract_features(rows)
-    numeric = Pipeline([
-        ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
-        ("scaler", StandardScaler()),
-    ])
-    categorical = Pipeline([
-        ("imputer", SimpleImputer(strategy="constant", fill_value="unknown")),
-        ("encoder", OneHotEncoder(handle_unknown="ignore")),
-    ])
-    preprocessor = ColumnTransformer([
-        ("numeric", numeric, NUMERIC_FEATURES),
-        ("categorical", categorical, CATEGORICAL_FEATURES),
-    ])
+    classifier = create_classifier(config or TrainingConfigChurn())
     pipeline = Pipeline([
-        ("preprocessor", preprocessor),
-        ("classifier", LogisticRegression(max_iter=1000, random_state=42)),
+        ("preprocessor", build_preprocessor()),
+        ("classifier", classifier),
     ])
     pipeline.fit(X, y)
     return pipeline
 
 
-def train_and_evaluate(rows: list[dict]) -> tuple[Pipeline, dict]:
+def train_and_evaluate(
+    rows: list[dict], config: TrainingConfigChurn | None = None
+) -> tuple[Pipeline, dict]:
     X_train, X_test, y_train, y_test = split_dataset(rows)
     train_rows = X_train.assign(**{TARGET: y_train}).to_dict(orient="records")
-    pipeline = train_churn_model(train_rows)
+    pipeline = train_churn_model(train_rows, config)
     predictions = pipeline.predict(X_test)
     metrics = {
         "accuracy": float(accuracy_score(y_test, predictions)),
